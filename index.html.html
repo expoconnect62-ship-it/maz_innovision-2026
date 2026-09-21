@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Setup Passkey - MAZ InnoVision 2026</title>
+  <!-- Load Supabase JS Client -->
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <style>
+    body { font-family: 'Inter', system-ui, sans-serif; background-color: #f8fafc; display: flex; justify-content: center; align-items: center; min-height: 100vh; margin: 0; }
+    .card { background: #ffffff; padding: 32px; border-radius: 20px; box-shadow: 0 10px 25px rgba(0,0,0,0.08); max-width: 400px; width: 90%; text-align: center; }
+    h2 { color: #1e1b4b; margin-bottom: 8px; }
+    p { color: #64748b; font-size: 14px; margin-bottom: 24px; }
+    .btn { width: 100%; padding: 12px; border: none; border-radius: 10px; font-weight: 600; cursor: pointer; font-size: 15px; transition: all 0.2s; }
+    .btn-google { background: #ffffff; color: #374151; border: 1px solid #d1d5db; display: flex; align-items: center; justify-content: center; gap: 10px; }
+    .btn-passkey { background: #4f46e5; color: #ffffff; margin-top: 16px; }
+    .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    .status-box { margin-top: 16px; padding: 12px; border-radius: 8px; font-size: 13px; display: none; word-break: break-all; text-align: left; }
+    .success { background: #dcfce7; color: #166534; }
+    .error { background: #fee2e2; color: #991b1b; }
+    .info { background: #e0e7ff; color: #3730a3; }
+  </style>
+</head>
+<body>
+
+  <div class="card">
+    <h2>MAZ InnoVision 2026</h2>
+    <p id="subheading">Verify your Google account to set up device Passkey authentication.</p>
+
+    <!-- Step 1: OAuth Sign In -->
+    <div id="step-auth">
+      <button class="btn btn-google" id="google-btn">
+        <img src="https://www.svgrepo.com/show/475656/google-color.svg" width="18" alt="Google">
+        Continue with Google
+      </button>
+    </div>
+
+    <!-- Step 2: Passkey Setup -->
+    <div id="step-passkey" style="display: none;">
+      <p id="user-info" style="font-weight: 600; color: #1e1b4b;"></p>
+      <button id="passkey-btn" class="btn btn-passkey">
+        🔑 Set Up Passkey (Face ID / Touch ID / PIN)
+      </button>
+    </div>
+
+    <div id="status" class="status-box"></div>
+  </div>
+
+  <script>
+    // ==================== CONFIGURATION ====================
+    const SUPABASE_URL = "https://YOUR_PROJECT_ID.supabase.co"; // Replace with your project URL
+    const SUPABASE_ANON_KEY = "YOUR_SUPABASE_ANON_KEY";         // Replace with your Anon Key
+    const TABLE_NAME = "crew_registrations";
+
+    let supabase;
+    let currentUserEmail = "";
+
+    function showStatus(msg, type) {
+      const box = document.getElementById('status');
+      box.innerText = msg;
+      box.className = 'status-box ' + type;
+      box.style.display = 'block';
+    }
+
+    // Safe initialization after window load
+    window.addEventListener('load', async () => {
+      try {
+        if (!window.supabase) {
+          throw new Error("Supabase SDK failed to load from CDN.");
+        }
+        
+        supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+        // Bind click events safely
+        document.getElementById('google-btn').addEventListener('click', signInWithGoogle);
+        document.getElementById('passkey-btn').addEventListener('click', registerPasskey);
+
+        // Check active login session on page return
+        const { data: { session }, error } = await supabase.auth.getSession();
+        if (error) throw error;
+
+        if (session && session.user) {
+          currentUserEmail = session.user.email;
+          await verifyAndShowPasskeyStep(currentUserEmail);
+        }
+      } catch (err) {
+        showStatus("Initialization Error: " + err.message, "error");
+      }
+    });
+
+    // 1. Google OAuth Flow
+    async function signInWithGoogle() {
+      try {
+        showStatus("Redirecting to Google...", "info");
+        const currentOrigin = window.location.origin; // e.g., https://your-site.netlify.app
+
+        const { error } = await supabase.auth.signInWithOAuth({
+          provider: 'google',
+          options: {
+            redirectTo: currentOrigin
+          }
+        });
+        if (error) showStatus("Auth Error: " + error.message, "error");
+      } catch (err) {
+        showStatus("Click Error: " + err.message, "error");
+      }
+    }
+
+    // 2. Check if Email exists in crew_registrations Table
+    async function verifyAndShowPasskeyStep(email) {
+      showStatus("Checking registration status...", "info");
+
+      const { data, error } = await supabase
+        .from(TABLE_NAME)
+        .select('*')
+        .eq('email', email)
+        .maybeSingle();
+
+      if (error || !data) {
+        showStatus(`Access Denied: Email (${email}) was not found in registered submissions.`, "error");
+        document.getElementById('step-auth').style.display = 'block';
+        document.getElementById('step-passkey').style.display = 'none';
+        return;
+      }
+
+      if (data.passkey_set === true) {
+        showStatus(`Passkey already configured for ${email}! Code: ${data.passkey_code}`, "success");
+        document.getElementById('step-auth').style.display = 'none';
+        document.getElementById('step-passkey').style.display = 'none';
+        return;
+      }
+
+      document.getElementById('step-auth').style.display = 'none';
+      document.getElementById('step-passkey').style.display = 'block';
+      document.getElementById('user-info').innerText = "Verified as: " + email;
+      showStatus("Email verified! Click below to set up your Passkey.", "success");
+    }
+
+    // 3. WebAuthn Passkey Registration
+    async function registerPasskey() {
+      const btn = document.getElementById('passkey-btn');
+      btn.disabled = true;
+      showStatus("Prompting device biometric / PIN sensor...", "info");
+
+      try {
+        if (!window.PublicKeyCredential) {
+          throw new Error("WebAuthn / Passkeys are not supported on this browser.");
+        }
+
+        const challenge = new Uint8Array(32);
+        window.crypto.getRandomValues(challenge);
+
+        const userId = new Uint8Array(16);
+        window.crypto.getRandomValues(userId);
+
+        // Sanitize domain for WebAuthn RP ID
+        const rpId = window.location.hostname;
+
+        const credential = await navigator.credentials.create({
+          publicKey: {
+            challenge: challenge,
+            rp: {
+              name: "MAZ InnoVision 2026",
+              id: rpId
+            },
+            user: {
+              id: userId,
+              name: currentUserEmail,
+              displayName: currentUserEmail
+            },
+            pubKeyCredParams: [
+              { alg: -7, type: "public-key" },  // ES256
+              { alg: -257, type: "public-key" } // RS256
+            ],
+            authenticatorSelection: {
+              authenticatorAttachment: "platform",
+              userVerification: "preferred"
+            },
+            timeout: 60000
+          }
+        });
+
+        if (credential) {
+          const passkeyCode = "PSK-" + Math.random().toString(36).substring(2, 8).toUpperCase() + "-" + Date.now().toString().slice(-4);
+
+          const { error: updateError } = await supabase
+            .from(TABLE_NAME)
+            .update({
+              passkey_set: true,
+              passkey_code: passkeyCode
+            })
+            .eq('email', currentUserEmail);
+
+          if (updateError) throw updateError;
+
+          showStatus(`Passkey configured successfully! Code generated: ${passkeyCode}`, "success");
+          btn.style.display = "none";
+        }
+      } catch (err) {
+        showStatus("Passkey Setup Failed: " + err.message, "error");
+        btn.disabled = false;
+      }
+    }
+  </script>
+</body>
+</html>
